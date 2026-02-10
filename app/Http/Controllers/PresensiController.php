@@ -102,8 +102,8 @@ class PresensiController extends Controller
         
         // Cek apakah dalam radius yang diizinkan
         if ($distance > $officeLocation->radius_meter) {
-            return redirect()->back()->with('error', 
-                'Anda berada di luar radius kantor. Jarak: ' . round($distance, 2) . 'm (Maks: ' . $officeLocation->radius_meter . 'm)');
+     return redirect()->back()->with('error', 
+         'Anda berada di luar radius kantor. Jarak: ' . round($distance, 2) . 'm (Maks: ' . $officeLocation->radius_meter . 'm)');
         }
         
         // Buat atau update presensi

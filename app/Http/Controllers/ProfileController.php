@@ -35,37 +35,26 @@ class ProfileController extends Controller
     /**
      * Update the user's profile information.
      */
-    public function update(ProfileUpdateRequest $request): RedirectResponse
-    {
-        $user = $request->user();
-        
-        // Validasi tambahan untuk data magang
-        $request->validate([
-            'jenis_peserta' => ['required', 'in:mahasiswa,smk,pegawai,lainnya'],
-            'institution_name' => ['nullable', 'string', 'max:255'],
-            'institution_class' => ['nullable', 'string', 'max:100'],
-            'nim_nisn' => ['nullable', 'string', 'max:50'],
-            'supervisor_name' => ['nullable', 'string', 'max:255'],
-            'supervisor_contact' => ['nullable', 'string', 'max:20'],
-            'start_date' => ['nullable', 'date'],
-            'end_date' => ['nullable', 'date', 'after_or_equal:start_date'],
-        ]);
-
-        // Update data user
-        $user->fill($request->only([
-            'name', 'email', 'jenis_peserta', 'institution_name', 
-            'institution_class', 'nim_nisn', 'supervisor_name', 
-            'supervisor_contact', 'start_date', 'end_date'
-        ]));
-
-        if ($user->isDirty('email')) {
-            $user->email_verified_at = null;
-        }
-
-        $user->save();
-
-        return Redirect::route('profile.edit')->with('status', 'profile-updated');
-    }
+   public function update(Request $request)
+{
+    $user = $request->user();
+    
+    // Simpan data
+    $user->name = $request->name;
+    $user->email = $request->email;
+    $user->jenis_peserta = $request->jenis_peserta;
+    $user->institution_name = $request->institution_name;
+    $user->institution_class = $request->institution_class;
+    $user->nim_nisn = $request->nim_nisn;
+    $user->supervisor_name = $request->supervisor_name;
+    $user->supervisor_contact = $request->supervisor_contact;
+    $user->start_date = $request->start_date;
+    $user->end_date = $request->end_date;
+    
+    $user->save();
+    
+    return redirect()->route('profile.edit')->with('status', 'profile-updated');
+}
 
     /**
      * Delete the user's account.
