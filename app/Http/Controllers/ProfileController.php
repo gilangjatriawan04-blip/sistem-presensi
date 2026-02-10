@@ -16,8 +16,19 @@ class ProfileController extends Controller
      */
     public function edit(Request $request): View
     {
+        $user = $request->user();
+        
+        // Data untuk dropdown
+        $jenisPesertaOptions = [
+            'mahasiswa' => 'Mahasiswa',
+            'smk' => 'SMK/SMA', 
+            'pegawai' => 'Pegawai',
+            'lainnya' => 'Lainnya'
+        ];
+        
         return view('profile.edit', [
-            'user' => $request->user(),
+            'user' => $user,
+            'jenisPesertaOptions' => $jenisPesertaOptions,
         ]);
     }
 
@@ -26,13 +37,32 @@ class ProfileController extends Controller
      */
     public function update(ProfileUpdateRequest $request): RedirectResponse
     {
-        $request->user()->fill($request->validated());
+        $user = $request->user();
+        
+        // Validasi tambahan untuk data magang
+        $request->validate([
+            'jenis_peserta' => ['required', 'in:mahasiswa,smk,pegawai,lainnya'],
+            'institution_name' => ['nullable', 'string', 'max:255'],
+            'institution_class' => ['nullable', 'string', 'max:100'],
+            'nim_nisn' => ['nullable', 'string', 'max:50'],
+            'supervisor_name' => ['nullable', 'string', 'max:255'],
+            'supervisor_contact' => ['nullable', 'string', 'max:20'],
+            'start_date' => ['nullable', 'date'],
+            'end_date' => ['nullable', 'date', 'after_or_equal:start_date'],
+        ]);
 
-        if ($request->user()->isDirty('email')) {
-            $request->user()->email_verified_at = null;
+        // Update data user
+        $user->fill($request->only([
+            'name', 'email', 'jenis_peserta', 'institution_name', 
+            'institution_class', 'nim_nisn', 'supervisor_name', 
+            'supervisor_contact', 'start_date', 'end_date'
+        ]));
+
+        if ($user->isDirty('email')) {
+            $user->email_verified_at = null;
         }
 
-        $request->user()->save();
+        $user->save();
 
         return Redirect::route('profile.edit')->with('status', 'profile-updated');
     }

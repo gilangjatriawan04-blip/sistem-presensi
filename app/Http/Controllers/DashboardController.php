@@ -9,12 +9,26 @@ use App\Models\Izin;
 use Carbon\Carbon;
 
 class DashboardController extends Controller
+
 {
+    
     public function index(Request $request)
     {
         $user = $request->user();
+    
+    // Redirect ke profile jika belum lengkap (kecuali admin)
+   if ($user->role !== 'admin' && empty($user->jenis_peserta)) {
+        return redirect()->route('profile.edit')
+            ->with('warning', 'Silakan lengkapi profile Anda terlebih dahulu.');
+    }
+    
+        $user = $request->user();
         $today = Carbon::today()->format('Y-m-d');
         
+         // Cek jika profile belum lengkap (kecuali admin)
+        if ($user->role !== 'admin' && empty($user->jenis_peserta)) {
+            return redirect()->route('profile.edit');
+        }
         // Data umum untuk semua role
         $data = [
             'user' => $user,
