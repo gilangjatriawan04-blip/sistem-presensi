@@ -8,24 +8,34 @@ use App\Models\OfficeLocation;
 use App\Models\Izin;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class PresensiController extends Controller
 {
     /**
-     * Display presensi page
+     * Display presensi page dengan informasi jam kerja
      */
     public function index(Request $request)
     {
         $user = $request->user();
         $today = Carbon::today()->format('Y-m-d');
+        $now = Carbon::now();
         
         // Cek presensi hari ini
         $presensiHariIni = Presensi::where('user_id', $user->id)
             ->whereDate('tanggal', $today)
             ->first();
         
-        // Cek apakah sudah ada izin untuk hari ini
+        // Cek izin yang disetujui untuk hari ini
         $izinHariIni = Izin::where('user_id', $user->id)
+            ->where('status_approval', 'disetujui')
+            ->whereDate('tanggal_mulai', '<=', $today)
+            ->whereDate('tanggal_selesai', '>=', $today)
+            ->first();
+        
+        // Cek izin terlambat yang disetujui untuk hari ini
+        $izinTerlambat = Izin::where('user_id', $user->id)
+            ->where('jenis_izin', 'izin_terlambat')
             ->where('status_approval', 'disetujui')
             ->whereDate('tanggal_mulai', '<=', $today)
             ->whereDate('tanggal_selesai', '>=', $today)
@@ -34,21 +44,41 @@ class PresensiController extends Controller
         // Get office location untuk GPS validation
         $officeLocation = OfficeLocation::where('is_aktif', true)->first();
         
-        return view('presensi.index', [
+        // Informasi jam kerja untuk ditampilkan di view
+        $jamInfo = [];
+        if ($officeLocation) {
+            $jamMasuk = Carbon::parse($officeLocation->jam_masuk_default);
+            $jamPulang = Carbon::parse($officeLocation->jam_pulang_default);
+            
+            $jamInfo = [
+                'jam_masuk' => $jamMasuk->format('H:i'),
+                'jam_pulang' => $jamPulang->format('H:i'),
+                'batas_terlambat' => $jamMasuk->copy()->addMinutes(60)->format('H:i'),
+                'boleh_checkin' => $now >= $jamMasuk && $now <= $jamMasuk->copy()->addMinutes(60),
+                'boleh_checkout' => $presensiHariIni ? ($now >= $jamPulang) : false,
+                'izin_terlambat' => $izinTerlambat ? true : false,
+            ];
+        }
+        
+        return view('peserta.presensi.index', [
             'presensi' => $presensiHariIni,
             'izin' => $izinHariIni,
+            'izinTerlambat' => $izinTerlambat,
             'officeLocation' => $officeLocation,
             'today' => $today,
+            'jamInfo' => $jamInfo,
+            'now' => $now->format('H:i'),
         ]);
     }
     
     /**
-     * Handle check-in (POIN 6, 7, 9)
+     * Handle check-in dengan validasi jam masuk dan izin terlambat
      */
     public function checkin(Request $request)
     {
         $user = $request->user();
         $today = Carbon::today()->format('Y-m-d');
+        $now = Carbon::now();
         
         // Validasi: sudah check-in hari ini?
         $existingPresensi = Presensi::where('user_id', $user->id)
@@ -56,43 +86,110 @@ class PresensiController extends Controller
             ->first();
             
         if ($existingPresensi && $existingPresensi->jam_masuk) {
-            return redirect()->back()->with('error', 'Anda sudah melakukan check-in hari ini.');
+            return redirect()->back()->with('error', '❌ Anda sudah melakukan check-in hari ini.');
         }
         
-        // Validasi: dalam periode magang? (POIN 12)
+        // Validasi: dalam periode magang?
         if ($user->start_date && $user->end_date) {
-            if ($today < $user->start_date || $today > $user->end_date) {
-                return redirect()->back()->with('error', 'Anda berada di luar periode magang.');
+            $start = Carbon::parse($user->start_date);
+            $end = Carbon::parse($user->end_date);
+            $todayDate = Carbon::today();
+
+            if ($todayDate->lt($start) || $todayDate->gt($end)) {
+                return redirect()->back()->with('error', '❌ Anda berada di luar periode magang.');
             }
         }
         
-        // Validasi: apakah ada izin yang disetujui? (POIN 8)
+        // Validasi: apakah ada izin sakit/izin biasa yang disetujui?
         $izin = Izin::where('user_id', $user->id)
             ->where('status_approval', 'disetujui')
+            ->whereIn('jenis_izin', ['izin', 'sakit', 'tugas_luar'])
             ->whereDate('tanggal_mulai', '<=', $today)
             ->whereDate('tanggal_selesai', '>=', $today)
             ->first();
             
         if ($izin) {
-            // Jika izin, tidak perlu presensi
-            return redirect()->back()->with('info', 'Anda sedang dalam periode izin/sakit.');
+            return redirect()->back()->with('info', '📋 Anda sedang dalam periode izin/sakit.');
         }
         
-        // Validasi input
+        // Ambil lokasi kantor
+        $officeLocation = OfficeLocation::where('is_aktif', true)->first();
+        
+        if (!$officeLocation) {
+            return redirect()->back()->with('error', '📍 Lokasi kantor belum dikonfigurasi.');
+        }
+        
+        // ===== VALIDASI JAM MASUK DENGAN IZIN TERLAMBAT =====
+        $jamMasukNormal = Carbon::parse($officeLocation->jam_masuk_default);
+        $batasTerlambat = $jamMasukNormal->copy()->addMinutes(60);
+        
+        // Cek apakah ada izin terlambat yang disetujui untuk hari ini
+        $izinTerlambat = Izin::where('user_id', $user->id)
+            ->where('jenis_izin', 'izin_terlambat')
+            ->where('status_approval', 'disetujui')
+            ->whereDate('tanggal_mulai', '<=', $today)
+            ->whereDate('tanggal_selesai', '>=', $today)
+            ->first();
+        
+        // Validasi: belum waktunya check-in
+      if ($now < $jamMasukNormal) {
+    $selisih = (int) abs($jamMasukNormal->diffInMinutes($now));
+    return redirect()->back()->with('warning', 
+        "⏰ Belum waktunya check-in. Masih $selisih menit lagi menuju jam masuk (jam " . 
+        $jamMasukNormal->format('H:i') . ").");
+}
+        
+        $menitTerlambat = $jamMasukNormal->diffInMinutes($now);
+        
+        // Jika sudah melewati jam masuk normal (terlambat)
+        if ($menitTerlambat > 0) {
+            
+            // Jika TIDAK ada izin terlambat
+            if (!$izinTerlambat) {
+                
+                // Terlambat > 60 menit
+           // Validasi jam masuk
+$menitTerlambat = (int) $jamMasukNormal->diffInMinutes($now);
+
+if ($menitTerlambat > 0) {
+    if (!$izinTerlambat) {
+       if ($menitTerlambat > 60) {
+    return redirect()->back()
+        ->with('error', "⏰ Anda terlambat " . (int)$menitTerlambat . " menit (lebih dari 60 menit) dan tidak memiliki izin terlambat.")
+        ->with('show_izin_button', true);
+}
+        if ($menitTerlambat <= 60) {
+            session()->flash('warning', 
+                "⚠️ Anda terlambat {$menitTerlambat} menit. Anda tetap bisa check-in dengan status 'terlambat'.");
+        }
+    } else {
+        session()->flash('info', "✅ Anda menggunakan izin terlambat. Terlambat {$menitTerlambat} menit.");
+    }
+}
+                
+                // Terlambat 1-60 menit (masih toleransi)
+               if ($menitTerlambat > 60) {
+    return redirect()->back()
+        ->with('warning', "⏰ Anda terlambat " . (int)$menitTerlambat . " menit (lebih dari 60 menit) dan tidak memiliki izin terlambat.")
+        ->with('show_izin_button', true);
+}
+            }
+            
+            // Jika ADA izin terlambat
+            if ($izinTerlambat) {
+                session()->flash('info', "✅ Anda menggunakan izin terlambat. Terlambat {$menitTerlambat} menit.");
+            }
+        }
+        // ===== END VALIDASI JAM MASUK =====
+        
+        // Validasi input GPS
         $request->validate([
             'latitude' => ['required', 'numeric', 'between:-90,90'],
             'longitude' => ['required', 'numeric', 'between:-180,180'],
             'keterangan' => ['nullable', 'string', 'max:500'],
         ]);
         
-        // Validasi GPS (POIN 7)
-        $officeLocation = OfficeLocation::where('is_aktif', true)->first();
-        
-        if (!$officeLocation) {
-            return redirect()->back()->with('error', 'Lokasi kantor belum dikonfigurasi.');
-        }
-        
-        // Hitung jarak menggunakan Haversine formula
+        // Hitung jarak dengan kantor
         $distance = $this->calculateDistance(
             $request->latitude,
             $request->longitude,
@@ -100,10 +197,10 @@ class PresensiController extends Controller
             $officeLocation->longitude
         );
         
-        // Cek apakah dalam radius yang diizinkan
+        // Validasi radius
         if ($distance > $officeLocation->radius_meter) {
-     return redirect()->back()->with('error', 
-         'Anda berada di luar radius kantor. Jarak: ' . round($distance, 2) . 'm (Maks: ' . $officeLocation->radius_meter . 'm)');
+            return redirect()->back()->with('error', 
+                '📍 Anda berada di luar radius kantor. Jarak: ' . round($distance, 2) . 'm (Maks: ' . $officeLocation->radius_meter . 'm)');
         }
         
         // Buat atau update presensi
@@ -117,8 +214,8 @@ class PresensiController extends Controller
             $presensi = $existingPresensi;
         }
         
-        // Gunakan waktu server (POIN 6)
-        $presensi->jam_masuk = Carbon::now();
+        // Simpan data check-in
+        $presensi->jam_masuk = $now;
         $presensi->lokasi_masuk = $request->latitude . ',' . $request->longitude;
         $presensi->keterangan = $request->keterangan;
         
@@ -127,16 +224,17 @@ class PresensiController extends Controller
         
         $presensi->save();
         
-        return redirect()->route('presensi.index')->with('success', 'Check-in berhasil!');
+        return redirect()->route('presensi.index')->with('success', '✅ Check-in berhasil!');
     }
-    
+
     /**
-     * Handle check-out
+     * Handle check-out dengan validasi jam pulang
      */
     public function checkout(Request $request)
     {
         $user = $request->user();
         $today = Carbon::today()->format('Y-m-d');
+        $now = Carbon::now();
         
         // Cari presensi hari ini
         $presensi = Presensi::where('user_id', $user->id)
@@ -144,27 +242,47 @@ class PresensiController extends Controller
             ->first();
             
         if (!$presensi) {
-            return redirect()->back()->with('error', 'Anda belum melakukan check-in hari ini.');
+            return redirect()->back()->with('error', '❌ Anda belum melakukan check-in hari ini.');
         }
         
         if ($presensi->jam_pulang) {
-            return redirect()->back()->with('error', 'Anda sudah melakukan check-out hari ini.');
+            return redirect()->back()->with('error', '✅ Anda sudah melakukan check-out hari ini.');
         }
         
-        // Validasi input
+        // Ambil lokasi kantor
+        $officeLocation = OfficeLocation::where('is_aktif', true)->first();
+        
+        // ===== VALIDASI JAM PULANG =====
+        $jamPulangNormal = Carbon::parse($presensi->jam_pulang_normal);
+        
+        if ($now < $jamPulangNormal) {
+            $selisih = $jamPulangNormal->diffInMinutes($now);
+            $jam = floor($selisih / 60);
+            $menit = $selisih % 60;
+            
+            if ($jam > 0) {
+                $pesan = "⏰ Anda belum bisa check-out. Masih $jam jam $menit menit lagi menuju jam pulang (jam " . 
+                         $jamPulangNormal->format('H:i') . ").";
+            } else {
+                $pesan = "⏰ Anda belum bisa check-out. Masih $menit menit lagi menuju jam pulang (jam " . 
+                         $jamPulangNormal->format('H:i') . ").";
+            }
+            
+            return redirect()->back()->with('warning', $pesan);
+        }
+        // ===== END VALIDASI JAM PULANG =====
+        
+        // Validasi input GPS
         $request->validate([
             'latitude' => ['required', 'numeric', 'between:-90,90'],
             'longitude' => ['required', 'numeric', 'between:-180,180'],
         ]);
         
-        // Validasi GPS
-        $officeLocation = OfficeLocation::where('is_aktif', true)->first();
-        
         if (!$officeLocation) {
-            return redirect()->back()->with('error', 'Lokasi kantor belum dikonfigurasi.');
+            return redirect()->back()->with('error', '📍 Lokasi kantor belum dikonfigurasi.');
         }
         
-        // Hitung jarak
+        // Hitung jarak dengan kantor
         $distance = $this->calculateDistance(
             $request->latitude,
             $request->longitude,
@@ -172,22 +290,27 @@ class PresensiController extends Controller
             $officeLocation->longitude
         );
         
-        // Cek apakah dalam radius
+        // Validasi radius
         if ($distance > $officeLocation->radius_meter) {
             return redirect()->back()->with('error', 
-                'Anda berada di luar radius kantor untuk check-out.');
+                '📍 Anda berada di luar radius kantor. Jarak: ' . round($distance, 2) . 'm (Maks: ' . $officeLocation->radius_meter . 'm)');
         }
         
-        // Update presensi
-        $presensi->jam_pulang = Carbon::now(); // Waktu server
+        // Update data check-out
+        $presensi->jam_pulang = $now;
         $presensi->lokasi_pulang = $request->latitude . ',' . $request->longitude;
         
-        // Hitung ulang status (untuk pulang cepat)
+        // Hitung ulang status
         $presensi->hitungStatus();
         
         $presensi->save();
         
-        return redirect()->route('presensi.index')->with('success', 'Check-out berhasil!');
+        // Hitung total jam kerja
+        $totalJam = floor($presensi->total_kerja_menit / 60);
+        $totalMenit = $presensi->total_kerja_menit % 60;
+        
+        return redirect()->route('presensi.index')->with('success', 
+            "✅ Check-out berhasil! Total kerja: {$totalJam} jam {$totalMenit} menit.");
     }
     
     /**
@@ -201,7 +324,7 @@ class PresensiController extends Controller
             ->orderBy('tanggal', 'desc')
             ->paginate(20);
         
-        return view('presensi.riwayat', [
+        return view('peserta.presensi.riwayat', [
             'presensis' => $presensis,
         ]);
     }

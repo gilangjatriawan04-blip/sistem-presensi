@@ -11,35 +11,50 @@ use Illuminate\View\View;
 
 class AuthenticatedSessionController extends Controller
 {
-    /**
-     * Display the login view.
-     */
     public function create(): View
     {
         return view('auth.login');
     }
 
-    /**
-     * Handle an incoming authentication request.
-     */
     public function store(LoginRequest $request): RedirectResponse
     {
         $request->authenticate();
-
         $request->session()->regenerate();
 
-        return redirect()->intended(route('dashboard', absolute: false));
+        $user = Auth::user();
+
+        $deviceId = md5(
+            $request->header('User-Agent') .
+            $request->ip()
+        );
+
+        if ($user->device_id && $user->device_id !== $deviceId) {
+            Auth::logout();
+            $request->session()->invalidate();
+
+            return redirect()->route('login')
+                ->with('error', 'Akun sudah login di device lain.');
+        }
+
+        $user->device_id = $deviceId;
+        $user->last_login_at = now();
+        $user->last_login_ip = $request->ip();
+        $user->save();
+
+        return redirect()->intended(route('dashboard'));
     }
 
-    /**
-     * Destroy an authenticated session.
-     */
     public function destroy(Request $request): RedirectResponse
     {
+        if (Auth::check()) {
+            $user = Auth::user();
+            $user->device_id = null;
+            $user->save();
+        }
+
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();
-
         $request->session()->regenerateToken();
 
         return redirect('/');
